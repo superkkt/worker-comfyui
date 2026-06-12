@@ -10,7 +10,7 @@
 
 ---
 
-This project allows you to run ComfyUI workflows as a serverless API endpoint on the RunPod platform. Submit workflows via API calls and receive generated images as base64 strings or S3 URLs.
+This project allows you to run ComfyUI workflows as a serverless API endpoint on the RunPod platform. Submit workflows via API calls and receive a completion status after the workflow finishes.
 
 ## Table of Contents
 
@@ -27,7 +27,7 @@ This project allows you to run ComfyUI workflows as a serverless API endpoint on
 
 1.  🐳 Choose one of the [available Docker images](#available-docker-images) for your serverless endpoint (e.g., `runpod/worker-comfyui:<version>-sd3`).
 2.  📄 Follow the [Deployment Guide](docs/deployment.md) to set up your RunPod template and endpoint.
-3.  ⚙️ Optionally configure the worker (e.g., for S3 upload) using environment variables - see the full [Configuration Guide](docs/configuration.md).
+3.  ⚙️ Optionally configure the worker using environment variables - see the full [Configuration Guide](docs/configuration.md).
 4.  🧪 Pick an example workflow from [`test_resources/workflows/`](./test_resources/workflows/) or [get your own](#getting-the-workflow-json).
 5.  🚀 Follow the [Usage](#usage) steps below to interact with your deployed endpoint.
 
@@ -45,7 +45,7 @@ Replace `<version>` with the current release tag, check the [releases page](http
 
 ## API Specification
 
-The worker exposes standard RunPod serverless endpoints (`/run`, `/runsync`, `/health`). By default, images are returned as base64 strings. You can configure the worker to upload images to an S3 bucket instead by setting specific environment variables (see [Configuration Guide](docs/configuration.md)).
+The worker exposes standard RunPod serverless endpoints (`/run`, `/runsync`, `/health`). The handler monitors ComfyUI execution and returns a success status when the workflow finishes. It does not read generated output files or include generated images in the response.
 
 Use the `/runsync` endpoint for synchronous requests that wait for the job to complete and return the result directly. Use the `/run` endpoint for asynchronous requests that return immediately with a job ID; you'll need to poll the `/status` endpoint separately to get the result.
 
@@ -100,53 +100,24 @@ Each object within the `input.images` array must contain:
 
 ### Output
 
-> [!WARNING]
->
-> **Breaking Change in Output Format (5.0.0+)**
->
-> Versions `< 5.0.0` returned the primary image data (S3 URL or base64 string) directly within an `output.message` field.
-> Starting with `5.0.0`, the output format has changed significantly, see below
-
 ```json
 {
   "id": "sync-uuid-string",
   "status": "COMPLETED",
   "output": {
-    "images": [
-      {
-        "filename": "ComfyUI_00001_.png",
-        "type": "base64",
-        "data": "iVBORw0KGgoAAAANSUhEUg..."
-      }
-    ]
+    "status": "success"
   },
   "delayTime": 123,
   "executionTime": 4567
 }
 ```
 
-| Field Path      | Type             | Required | Description                                                                                                 |
-| --------------- | ---------------- | -------- | ----------------------------------------------------------------------------------------------------------- |
-| `output`        | Object           | Yes      | Top-level object containing the results of the job execution.                                               |
-| `output.images` | Array of Objects | No       | Present if the workflow generated images. Contains a list of objects, each representing one output image.   |
-| `output.errors` | Array of Strings | No       | Present if non-fatal errors or warnings occurred during processing (e.g., S3 upload failure, missing data). |
+| Field Path      | Type   | Required | Description                                                   |
+| --------------- | ------ | -------- | ------------------------------------------------------------- |
+| `output`        | Object | Yes      | Top-level object containing the result of the job execution.  |
+| `output.status` | String | Yes      | `"success"` when ComfyUI reports that the workflow completed. |
 
-#### `output.images`
-
-Each object in the `output.images` array has the following structure:
-
-| Field Name | Type   | Description                                                                                     |
-| ---------- | ------ | ----------------------------------------------------------------------------------------------- |
-| `filename` | String | The original filename assigned by ComfyUI during generation.                                    |
-| `type`     | String | Indicates the format of the data. Either `"base64"` or `"s3_url"` (if S3 upload is configured). |
-| `data`     | String | Contains either the base64 encoded image string or the S3 URL for the uploaded image file.      |
-
-> [!NOTE]
-> The `output.images` field provides a list of all generated images (excluding temporary ones).
->
-> - If S3 upload is **not** configured (default), `type` will be `"base64"` and `data` will contain the base64 encoded image string.
-> - If S3 upload **is** configured, `type` will be `"s3_url"` and `data` will contain the S3 URL. See the [Configuration Guide](docs/configuration.md#example-s3-response) for an S3 example response.
-> - Clients interacting with the API need to handle this list-based structure under `output.images`.
+Generated files remain in ComfyUI's configured output location. The handler intentionally does not fetch, base64-encode, upload, or return those files.
 
 ## Usage
 
