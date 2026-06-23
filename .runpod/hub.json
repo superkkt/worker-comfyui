@@ -22,33 +22,63 @@
         }
       },
       {
-        "key": "BUCKET_ENDPOINT_URL",
+        "key": "R2_ACCOUNT_ID",
         "input": {
-          "name": "S3 Bucket Endpoint URL",
+          "name": "R2 Account ID",
           "type": "string",
-          "description": "Upload images to S3 (e.g. https://<bucket>.s3.<region>.amazonaws.com)",
+          "description": "Cloudflare account ID for R2",
           "default": "",
-          "advanced": true
+          "advanced": false
         }
       },
       {
-        "key": "BUCKET_ACCESS_KEY_ID",
+        "key": "R2_ACCESS_KEY_ID",
         "input": {
-          "name": "S3 Access Key ID",
+          "name": "R2 Access Key ID",
           "type": "string",
-          "description": "AWS Access Key ID (if S3 upload is enabled)",
+          "description": "Cloudflare R2 access key ID",
           "default": "",
-          "advanced": true
+          "advanced": false
         }
       },
       {
-        "key": "BUCKET_SECRET_ACCESS_KEY",
+        "key": "R2_SECRET_ACCESS_KEY",
         "input": {
-          "name": "S3 Secret Access Key",
+          "name": "R2 Secret Access Key",
           "type": "string",
-          "description": "AWS Secret Access Key (if S3 upload is enabled)",
+          "description": "Cloudflare R2 secret access key",
           "default": "",
-          "advanced": true
+          "advanced": false
+        }
+      },
+      {
+        "key": "R2_BUCKET",
+        "input": {
+          "name": "R2 Bucket",
+          "type": "string",
+          "description": "R2 bucket used for temporary workflow file transfer",
+          "default": "",
+          "advanced": false
+        }
+      },
+      {
+        "key": "R2_ENDPOINT",
+        "input": {
+          "name": "R2 Endpoint",
+          "type": "string",
+          "description": "R2 S3-compatible endpoint, e.g. https://<account_id>.r2.cloudflarestorage.com",
+          "default": "",
+          "advanced": false
+        }
+      },
+      {
+        "key": "R2_REGION",
+        "input": {
+          "name": "R2 Region",
+          "type": "string",
+          "description": "R2 S3-compatible region, usually auto",
+          "default": "",
+          "advanced": false
         }
       },
       {

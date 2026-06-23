@@ -1,6 +1,6 @@
 # Customization
 
-This guide covers methods for adding your own models, custom nodes, and static input files into a custom `worker-comfyui`.
+This guide covers methods for adding your own models and custom nodes into a custom `worker-comfyui`.
 
 > [!TIP]
 >
@@ -14,7 +14,7 @@ This guide covers methods for adding your own models, custom nodes, and static i
 
 There are two primary methods for **manual** customization:
 
-1.  **Custom Dockerfile (recommended for manual setup):** Create your own `Dockerfile` starting `FROM` one of the official `worker-comfyui` base images. This allows you to bake specific custom nodes, models, and input files directly into your image using `comfy-cli` commands. **This method does not require forking the `worker-comfyui` repository.**
+1.  **Custom Dockerfile (recommended for manual setup):** Create your own `Dockerfile` starting `FROM` one of the official `worker-comfyui` base images. This allows you to bake specific custom nodes and models directly into your image using `comfy-cli` commands. **This method does not require forking the `worker-comfyui` repository.**
 2.  **Network Volume:** Store models on a persistent network volume attached to your RunPod endpoint. This is useful if you frequently change models or have very large models you don't want to include in the image build process.
 
 ## Method 1: Custom Dockerfile
@@ -49,18 +49,7 @@ This is the most flexible and recommended approach for creating reproducible, cu
 >
 > checkpoints, clip, clip_vision, configs, controlnet, diffusers, embeddings, gligen, hypernetworks, loras, style_models, unet, upscale_models, vae, vae_approx, animatediff_models, animatediff_motion_lora, ipadapter, photomaker, sams, insightface, facerestore_models, facedetection, mmdets, instantid
 
-5.  **Add Static Input Files (Optional):** If your workflows consistently require specific input images, masks, videos, etc., you can copy them directly into the image.
-
-- Create an `input/` directory in the same folder as your `Dockerfile`.
-- Place your static files inside this `input/` directory.
-- Add a `COPY` command to your `Dockerfile`:
-
-  ```Dockerfile
-  # Copy local static input files into the ComfyUI input directory
-  COPY input/ /comfyui/input/
-  ```
-
-- These files can then be referenced in your workflow using a "Load Image" (or similar) node pointing to the filename (e.g.,`my_static_image.png`).
+5.  **Runtime Input Files:** Do not bake per-request input images, masks, or videos into the image. Runtime files must be uploaded to Cloudflare R2 and referenced from the workflow with `/tmp/r2/inputs/...` paths.
 
 Once you have created your custom `Dockerfile`, refer to the [Deployment Guide](deployment.md#deploying-custom-setups) for instructions on how to build, push and deploy your custom image to RunPod.
 
@@ -80,14 +69,13 @@ RUN comfy model download --url https://huggingface.co/h94/IP-Adapter/resolve/mai
 RUN comfy model download --url https://huggingface.co/shiertier/clip_vision/resolve/main/SD15/model.safetensors --relative-path models/clip_vision --filename models.safetensors
 RUN comfy model download --url https://huggingface.co/lllyasviel/ic-light/resolve/main/iclight_sd15_fcon.safetensors --relative-path models/diffusion_models --filename iclight_sd15_fcon.safetensors
 
-# Copy local static input files into the ComfyUI input directory (delete if not needed)
-# Assumes you have an 'input' folder next to your Dockerfile
-COPY input/ /comfyui/input/
+# Runtime input files are not copied into the image.
+# Upload them to Cloudflare R2 and reference /tmp/r2/inputs/... in the workflow.
 ```
 
 ## Method 2: Network Volume
 
-Using a Network Volume is primarily useful if you want to manage **models** separately from your worker image, especially if they are large or change often.
+Using a Network Volume is useful only for managing **models** separately from your worker image, especially if they are large or change often. Runtime input and output files are transferred through Cloudflare R2 instead.
 
 1.  **Create a Network Volume**:
     - Follow the [RunPod Network Volumes guide](https://docs.runpod.io/pods/storage/create-network-volumes) to create a volume in the same region as your endpoint.

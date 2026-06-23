@@ -29,10 +29,11 @@ This document outlines the key operational and structural conventions for the `w
 
 ## 3. API Interaction
 
-- **Input Structure:** API calls to the `/run` or `/runsync` endpoints must adhere to the JSON structure specified in the `README.md` ("API specification"). The primary key is `input`, containing `workflow` (mandatory object) and `images` (optional array).
-- **Image Encoding:** Input images provided in the `input.images` array must be base64 encoded strings (optionally including a `data:[<mediatype>];base64,` prefix).
+- **Input Structure:** API calls to the `/run` or `/runsync` endpoints must adhere to the JSON structure specified in the `README.md` ("API specification"). The primary key is `input`, containing `workflow` (mandatory object) and optional `comfy_org_api_key`.
+- **File Transfer:** Runtime input and output files are passed through Cloudflare R2, not through RunPod request/response bodies or RunPod Network Volumes.
+- **Workflow Paths:** Input file paths in workflows must start with `/tmp/r2/inputs/`; output file paths must start with `/tmp/r2/outputs/`; paths containing `..` are rejected.
 - **Workflow Format:** The `input.workflow` object should contain the JSON exported from ComfyUI using the "Save (API Format)" option (requires enabling "Dev mode Options" in ComfyUI settings).
-- **Output Structure:** Successful responses contain `output.status` with the value `"success"`. Generated files are not fetched, encoded, uploaded, or returned by the handler.
+- **Output Structure:** Successful responses contain `output.status` with the value `"success"`. Generated files are uploaded to R2 and are not base64-encoded or returned by the handler.
 - **Internal Communication:** Job status monitoring uses the ComfyUI websocket API instead of HTTP polling for efficiency.
 
 ## 4. Error Handling

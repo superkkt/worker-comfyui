@@ -3,13 +3,14 @@ import json
 import time
 import os
 import requests
-import base64
-from io import BytesIO
 import websocket
 import uuid
 import socket
 import traceback
 import logging
+import shutil
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 
 from network_volume import (
     is_network_volume_debug_enabled,
@@ -54,6 +55,18 @@ COMFY_HOST = "127.0.0.1:8188"
 # Enforce a clean state after each job is done
 # see https://docs.runpod.io/docs/handler-additional-controls#refresh-worker
 REFRESH_WORKER = os.environ.get("REFRESH_WORKER", "false").lower() == "true"
+
+R2_REQUIRED_ENV_VARS = (
+    "R2_ACCOUNT_ID",
+    "R2_ACCESS_KEY_ID",
+    "R2_SECRET_ACCESS_KEY",
+    "R2_BUCKET",
+    "R2_ENDPOINT",
+    "R2_REGION",
+)
+R2_ROOT_DIR = "/tmp/r2"
+R2_INPUTS_DIR = "/tmp/r2/inputs"
+R2_OUTPUTS_DIR = "/tmp/r2/outputs"
 
 # ---------------------------------------------------------------------------
 # Helper: quick reachability probe of ComfyUI HTTP endpoint (port 8188)
@@ -165,21 +178,20 @@ def validate_input(job_input):
         except json.JSONDecodeError:
             return None, "Invalid JSON format in input"
 
+    if not isinstance(job_input, dict):
+        return None, "Input must be a JSON object"
+
     # Validate 'workflow' in input
     workflow = job_input.get("workflow")
     if workflow is None:
         return None, "Missing 'workflow' parameter"
 
-    # Validate 'images' in input, if provided
-    images = job_input.get("images")
-    if images is not None:
-        if not isinstance(images, list) or not all(
-            "name" in image and "image" in image for image in images
-        ):
-            return (
-                None,
-                "'images' must be a list of objects with 'name' and 'image' keys",
-            )
+    if "images" in job_input:
+        return (
+            None,
+            "'images' is no longer supported. Store input files in R2 and "
+            "reference them with /tmp/r2/inputs/... paths in the workflow.",
+        )
 
     # Optional: API key for Comfy.org API Nodes, passed per-request
     comfy_org_api_key = job_input.get("comfy_org_api_key")
@@ -187,9 +199,155 @@ def validate_input(job_input):
     # Return validated data and no error
     return {
         "workflow": workflow,
-        "images": images,
         "comfy_org_api_key": comfy_org_api_key,
     }, None
+
+
+def get_r2_config():
+    """Load R2 runtime configuration without exposing secret values."""
+    missing_vars = [name for name in R2_REQUIRED_ENV_VARS if not os.environ.get(name)]
+    if missing_vars:
+        raise ValueError(
+            "Missing required R2 environment variables: " + ", ".join(missing_vars)
+        )
+
+    return {name: os.environ[name] for name in R2_REQUIRED_ENV_VARS}
+
+
+def create_r2_client(config):
+    """Create a boto3 S3-compatible client for Cloudflare R2."""
+    return boto3.client(
+        service_name="s3",
+        endpoint_url=config["R2_ENDPOINT"],
+        aws_access_key_id=config["R2_ACCESS_KEY_ID"],
+        aws_secret_access_key=config["R2_SECRET_ACCESS_KEY"],
+        region_name=config["R2_REGION"],
+    )
+
+
+def _iter_workflow_strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _iter_workflow_strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _iter_workflow_strings(item)
+
+
+def _validate_local_r2_path(path, base_dir):
+    if ".." in path:
+        raise ValueError(f"R2 local paths must not contain '..': {path}")
+
+    normalized_path = os.path.abspath(os.path.normpath(path))
+    normalized_base = os.path.abspath(os.path.normpath(base_dir))
+    if (
+        normalized_path == normalized_base
+        or os.path.commonpath([normalized_base, normalized_path]) != normalized_base
+    ):
+        raise ValueError(f"R2 local path must be under {base_dir}: {path}")
+
+    return normalized_path
+
+
+def collect_r2_input_paths(workflow):
+    input_paths = set()
+    for value in _iter_workflow_strings(workflow):
+        if ".." in value and ("/" in value or "\\" in value):
+            raise ValueError(
+                f"Workflow path-like values must not contain '..': {value}"
+            )
+
+        if value.startswith(R2_INPUTS_DIR + "/"):
+            input_paths.add(_validate_local_r2_path(value, R2_INPUTS_DIR))
+        elif value.startswith(R2_OUTPUTS_DIR + "/"):
+            _validate_local_r2_path(value, R2_OUTPUTS_DIR)
+        elif value.startswith(R2_ROOT_DIR + "/"):
+            raise ValueError(
+                "R2 local paths must start with /tmp/r2/inputs/ or "
+                f"/tmp/r2/outputs/: {value}"
+            )
+
+    return sorted(input_paths)
+
+
+def _remove_path(path):
+    if os.path.islink(path) or os.path.isfile(path):
+        os.unlink(path)
+    elif os.path.isdir(path):
+        shutil.rmtree(path)
+
+
+def reset_r2_workspace():
+    for path in (R2_INPUTS_DIR, R2_OUTPUTS_DIR):
+        _remove_path(path)
+        os.makedirs(path, exist_ok=True)
+
+
+def cleanup_r2_workspace():
+    for path in (R2_INPUTS_DIR, R2_OUTPUTS_DIR):
+        _remove_path(path)
+
+
+def local_r2_path_to_key(path, base_dir):
+    normalized_path = _validate_local_r2_path(path, base_dir)
+    relative_path = os.path.relpath(normalized_path, os.path.abspath(base_dir))
+    return relative_path.replace(os.sep, "/")
+
+
+def _r2_error_message(action, key, exc):
+    if isinstance(exc, ClientError):
+        error = exc.response.get("Error", {})
+        code = error.get("Code", "Unknown")
+        message = error.get("Message", "No message")
+        return f"R2 {action} failed for key '{key}' ({code}: {message})"
+
+    return f"R2 {action} failed for key '{key}' ({exc.__class__.__name__})"
+
+
+def download_r2_inputs(r2_client, bucket, input_paths):
+    for local_path in input_paths:
+        key = local_r2_path_to_key(local_path, R2_INPUTS_DIR)
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        try:
+            print(f"worker-comfyui - Downloading R2 input: {key}")
+            r2_client.download_file(bucket, key, local_path)
+        except (BotoCoreError, ClientError, OSError) as exc:
+            raise ValueError(_r2_error_message("download", key, exc)) from exc
+
+    print(f"worker-comfyui - Downloaded {len(input_paths)} R2 input file(s).")
+
+
+def upload_r2_outputs(r2_client, bucket):
+    uploaded_count = 0
+    if not os.path.isdir(R2_OUTPUTS_DIR):
+        print("worker-comfyui - R2 output directory does not exist; nothing to upload.")
+        return uploaded_count
+
+    for root, dirs, files in os.walk(R2_OUTPUTS_DIR, followlinks=False):
+        dirs[:] = [
+            dirname
+            for dirname in dirs
+            if not os.path.islink(os.path.join(root, dirname))
+        ]
+
+        for filename in files:
+            local_path = os.path.join(root, filename)
+            if os.path.islink(local_path) or not os.path.isfile(local_path):
+                continue
+
+            key = local_r2_path_to_key(local_path, R2_OUTPUTS_DIR)
+            try:
+                print(f"worker-comfyui - Uploading R2 output: {key}")
+                r2_client.upload_file(local_path, bucket, key)
+            except (BotoCoreError, ClientError, OSError) as exc:
+                raise ValueError(_r2_error_message("upload", key, exc)) from exc
+
+            uploaded_count += 1
+
+    print(f"worker-comfyui - Uploaded {uploaded_count} R2 output file(s).")
+    return uploaded_count
 
 
 def _get_comfyui_pid():
@@ -283,90 +441,6 @@ def check_server(url, retries=0, delay=50):
             )
 
         time.sleep(delay / 1000)
-
-
-def upload_images(images):
-    """
-    Upload a list of base64 encoded images to the ComfyUI server using the /upload/image endpoint.
-
-    Args:
-        images (list): A list of dictionaries, each containing the 'name' of the image and the 'image' as a base64 encoded string.
-
-    Returns:
-        dict: A dictionary indicating success or error.
-    """
-    if not images:
-        return {"status": "success", "message": "No images to upload", "details": []}
-
-    responses = []
-    upload_errors = []
-
-    print(f"worker-comfyui - Uploading {len(images)} image(s)...")
-
-    for image in images:
-        try:
-            name = image["name"]
-            image_data_uri = image["image"]  # Get the full string (might have prefix)
-
-            # --- Strip Data URI prefix if present ---
-            if "," in image_data_uri:
-                # Find the comma and take everything after it
-                base64_data = image_data_uri.split(",", 1)[1]
-            else:
-                # Assume it's already pure base64
-                base64_data = image_data_uri
-            # --- End strip ---
-
-            blob = base64.b64decode(base64_data)  # Decode the cleaned data
-
-            # Prepare the form data
-            files = {
-                "image": (name, BytesIO(blob), "image/png"),
-                "overwrite": (None, "true"),
-            }
-
-            # POST request to upload the image
-            response = requests.post(
-                f"http://{COMFY_HOST}/upload/image", files=files, timeout=30
-            )
-            response.raise_for_status()
-
-            responses.append(f"Successfully uploaded {name}")
-            print(f"worker-comfyui - Successfully uploaded {name}")
-
-        except base64.binascii.Error as e:
-            error_msg = f"Error decoding base64 for {image.get('name', 'unknown')}: {e}"
-            print(f"worker-comfyui - {error_msg}")
-            upload_errors.append(error_msg)
-        except requests.Timeout:
-            error_msg = f"Timeout uploading {image.get('name', 'unknown')}"
-            print(f"worker-comfyui - {error_msg}")
-            upload_errors.append(error_msg)
-        except requests.RequestException as e:
-            error_msg = f"Error uploading {image.get('name', 'unknown')}: {e}"
-            print(f"worker-comfyui - {error_msg}")
-            upload_errors.append(error_msg)
-        except Exception as e:
-            error_msg = (
-                f"Unexpected error uploading {image.get('name', 'unknown')}: {e}"
-            )
-            print(f"worker-comfyui - {error_msg}")
-            upload_errors.append(error_msg)
-
-    if upload_errors:
-        print(f"worker-comfyui - image(s) upload finished with errors")
-        return {
-            "status": "error",
-            "message": "Some images failed to upload",
-            "details": upload_errors,
-        }
-
-    print(f"worker-comfyui - image(s) upload complete")
-    return {
-        "status": "success",
-        "message": "All images uploaded successfully",
-        "details": responses,
-    }
 
 
 def get_available_models():
@@ -529,43 +603,38 @@ def handler(job):
     if is_network_volume_debug_enabled():
         run_network_volume_diagnostics()
 
-    job_input = job["input"]
-
-    # Make sure that the input is valid
-    validated_data, error_message = validate_input(job_input)
-    if error_message:
-        return {"error": error_message}
-
-    # Extract validated data
-    workflow = validated_data["workflow"]
-    input_images = validated_data.get("images")
-
-    # Make sure that the ComfyUI HTTP API is available before proceeding
-    if not check_server(
-        f"http://{COMFY_HOST}/",
-        COMFY_API_AVAILABLE_MAX_RETRIES,
-        COMFY_API_AVAILABLE_INTERVAL_MS,
-    ):
-        return {
-            "error": f"ComfyUI server ({COMFY_HOST}) not reachable after multiple retries."
-        }
-
-    # Upload input images if they exist
-    if input_images:
-        upload_result = upload_images(input_images)
-        if upload_result["status"] == "error":
-            # Return upload errors
-            return {
-                "error": "Failed to upload one or more input images",
-                "details": upload_result["details"],
-            }
-
     ws = None
-    client_id = str(uuid.uuid4())
-    prompt_id = None
     errors = []
 
     try:
+        job_input = job["input"]
+
+        # Make sure that the input is valid
+        validated_data, error_message = validate_input(job_input)
+        if error_message:
+            return {"error": error_message}
+
+        workflow = validated_data["workflow"]
+        input_paths = collect_r2_input_paths(workflow)
+        r2_config = get_r2_config()
+        r2_client = create_r2_client(r2_config)
+
+        reset_r2_workspace()
+        download_r2_inputs(r2_client, r2_config["R2_BUCKET"], input_paths)
+
+        # Make sure that the ComfyUI HTTP API is available before proceeding
+        if not check_server(
+            f"http://{COMFY_HOST}/",
+            COMFY_API_AVAILABLE_MAX_RETRIES,
+            COMFY_API_AVAILABLE_INTERVAL_MS,
+        ):
+            return {
+                "error": f"ComfyUI server ({COMFY_HOST}) not reachable after multiple retries."
+            }
+
+        client_id = str(uuid.uuid4())
+        prompt_id = None
+
         # Establish WebSocket connection
         ws_url = f"ws://{COMFY_HOST}/ws?clientId={client_id}"
         print(f"worker-comfyui - Connecting to websocket: {ws_url}")
@@ -665,6 +734,15 @@ def handler(job):
                 "Workflow monitoring loop exited without confirmation of completion or error."
             )
 
+        if errors:
+            print(f"worker-comfyui - Job failed with errors: {errors}")
+            return {
+                "error": "Job processing failed",
+                "details": errors,
+            }
+
+        upload_r2_outputs(r2_client, r2_config["R2_BUCKET"])
+
     except websocket.WebSocketException as e:
         print(f"worker-comfyui - WebSocket Error: {e}")
         print(traceback.format_exc())
@@ -685,13 +763,7 @@ def handler(job):
         if ws and ws.connected:
             print(f"worker-comfyui - Closing websocket connection.")
             ws.close()
-
-    if errors:
-        print(f"worker-comfyui - Job failed with errors: {errors}")
-        return {
-            "error": "Job processing failed",
-            "details": errors,
-        }
+        cleanup_r2_workspace()
 
     print("worker-comfyui - Job completed successfully.")
     return {"status": "success"}

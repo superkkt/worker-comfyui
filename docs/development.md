@@ -105,6 +105,7 @@ For enhanced local development and end-to-end testing, you can start a local env
 1.  **Set Environment Variable (Optional but Recommended):**
     - While the `docker-compose.yml` sets `SERVE_API_LOCALLY=true` by default, you might manage environment variables externally (e.g., via a `.env` file).
     - Ensure the `SERVE_API_LOCALLY` environment variable is set to `true` for the `worker` service if you modify the compose file or use an `.env` file.
+    - Set the required R2 variables from the [Configuration Guide](configuration.md#cloudflare-r2-configuration). The handler requires R2 even when the workflow has no input files, because generated outputs are uploaded after execution.
 2.  **Start the services**:
     ```bash
     # From the project root directory

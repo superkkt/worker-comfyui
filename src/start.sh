@@ -58,7 +58,8 @@ echo "worker-comfyui: Starting ComfyUI"
 # PID file used by the handler to detect if ComfyUI is still running
 COMFY_PID_FILE="/tmp/comfyui.pid"
 
-COMFY_OUTPUTS_DIR_OPTION="--output-directory /comfyui/data/outputs"
+mkdir -p /tmp/r2/outputs
+COMFY_OUTPUTS_DIR_OPTION="--output-directory /tmp/r2/outputs"
 
 # Serve the API and don't shutdown the container
 if [ "$SERVE_API_LOCALLY" == "true" ]; then

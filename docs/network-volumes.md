@@ -5,6 +5,8 @@ This document explains how to use RunPod **Network Volumes** with `worker-comfyu
 > **Scope**
 >
 > These instructions apply to **serverless endpoints** using this worker. Pods mount network volumes at `/workspace` by default, while serverless workers see them at `/runpod-volume`.
+>
+> Network Volumes are only used for model storage in this worker. Runtime workflow input files and generated output files are transferred through Cloudflare R2 and must use `/tmp/r2/inputs/` and `/tmp/r2/outputs/` paths.
 
 ## Directory Mapping
 

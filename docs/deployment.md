@@ -15,8 +15,8 @@ This is the simplest method if the official images meet your needs.
   - Container Image: Use one of the official tags, e.g., `runpod/worker-comfyui:<version>-sd3`. (Refer to the main [README.md](../README.md#available-docker-images) for available image tags and the current version).
   - Container Registry Credentials: Leave as default (images are public).
   - Container Disk: Adjust based on the chosen image tag, see [GPU Recommendations](#gpu-recommendations).
-  - (optional) Environment Variables: Configure worker settings (see [Configuration Guide](configuration.md)).
-    - Note: Generated files are not returned in the API response. For persistent storage across jobs, consider using a [Network Volume](customization.md#method-2-network-volume-alternative-for-models). If models on your network volume are not being detected, see [Network Volumes & Model Paths](network-volumes.md) for troubleshooting steps.
+  - Environment Variables: Configure worker settings and the required Cloudflare R2 credentials (see [Configuration Guide](configuration.md)).
+    - Note: Runtime input and output files are transferred through R2. Network Volumes are for model storage only. If models on your network volume are not being detected, see [Network Volumes & Model Paths](network-volumes.md) for troubleshooting steps.
 - Click on `Save Template`
 
 ### Create your endpoint
@@ -32,7 +32,7 @@ This is the simplest method if the official images meet your needs.
   - Idle Timeout: `5` (Default is usually fine, adjust if needed).
   - Flash Boot: `enabled` (Recommended for faster worker startup).
   - Select Template: `worker-comfyui` (or the name you gave your template).
-  - (optional) Advanced: If you are using a Network Volume, select it under `Select Network Volume`. See the [Customization Guide](customization.md#method-2-network-volume-alternative-for-models). For detailed model path layout and debugging tips, see [Network Volumes & Model Paths](network-volumes.md).
+  - (optional) Advanced: If you are using a Network Volume for models, select it under `Select Network Volume`. See the [Customization Guide](customization.md#method-2-network-volume). For detailed model path layout and debugging tips, see [Network Volumes & Model Paths](network-volumes.md).
 
 - Click `deploy`
 - Your endpoint will be created. You can click on it to view the dashboard and find its ID.

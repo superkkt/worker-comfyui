@@ -10,7 +10,7 @@
 
 ---
 
-This project allows you to run ComfyUI workflows as a serverless API endpoint on the RunPod platform. Submit workflows via API calls and receive a completion status after the workflow finishes.
+This project allows you to run ComfyUI workflows as a serverless API endpoint on the RunPod platform. Submit workflows via API calls and receive a completion status after the workflow finishes. Runtime input and output files are transferred through Cloudflare R2.
 
 ## Table of Contents
 
@@ -45,7 +45,7 @@ Replace `<version>` with the current release tag, check the [releases page](http
 
 ## API Specification
 
-The worker exposes standard RunPod serverless endpoints (`/run`, `/runsync`, `/health`). The handler monitors ComfyUI execution and returns a success status when the workflow finishes. It does not read generated output files or include generated images in the response.
+The worker exposes standard RunPod serverless endpoints (`/run`, `/runsync`, `/health`). The handler downloads workflow input files from Cloudflare R2 before execution, uploads files written under `/tmp/r2/outputs/` after execution, and returns a success status when the workflow finishes. Generated files are not embedded in the response.
 
 Use the `/runsync` endpoint for synchronous requests that wait for the job to complete and return the result directly. Use the `/run` endpoint for asynchronous requests that return immediately with a job ID; you'll need to poll the `/status` endpoint separately to get the result.
 
@@ -65,38 +65,34 @@ Use the `/runsync` endpoint for synchronous requests that wait for the job to co
           "title": "CLIP Text Encode (Positive Prompt)"
         }
       }
-    },
-    "images": [
-      {
-        "name": "input_image_1.png",
-        "image": "data:image/png;base64,iVBOR..."
-      }
-    ]
+    }
   }
 }
 ```
 
 The following tables describe the fields within the `input` object:
 
-| Field Path                | Type   | Required | Description                                                                                                                                |
-| ------------------------- | ------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `input`                   | Object | Yes      | Top-level object containing request data.                                                                                                  |
-| `input.workflow`          | Object | Yes      | The ComfyUI workflow exported in the [required format](#getting-the-workflow-json).                                                        |
-| `input.images`            | Array  | No       | Optional array of input images. Each image is uploaded to ComfyUI's `input` directory and can be referenced by its `name` in the workflow. |
-| `input.comfy_org_api_key` | String | No       | Optional per-request Comfy.org API key for API Nodes. Overrides the `COMFY_ORG_API_KEY` environment variable if both are set.              |
+| Field Path                | Type   | Required | Description                                                                                                                   |
+| ------------------------- | ------ | -------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `input`                   | Object | Yes      | Top-level object containing request data.                                                                                     |
+| `input.workflow`          | Object | Yes      | The ComfyUI workflow exported in the [required format](#getting-the-workflow-json).                                           |
+| `input.comfy_org_api_key` | String | No       | Optional per-request Comfy.org API key for API Nodes. Overrides the `COMFY_ORG_API_KEY` environment variable if both are set. |
 
-#### `input.images` Object
+#### R2 File Paths
 
-Each object within the `input.images` array must contain:
+The request must not include file bodies. Upload input files to the configured R2 bucket before calling the endpoint, then reference them in the workflow with `/tmp/r2/inputs/...` paths.
 
-| Field Name | Type   | Required | Description                                                                                                                       |
-| ---------- | ------ | -------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `name`     | String | Yes      | Filename used to reference the image in the workflow (e.g., via a "Load Image" node). Must be unique within the array.            |
-| `image`    | String | Yes      | Base64 encoded string of the image. A data URI prefix (e.g., `data:image/png;base64,`) is optional and will be handled correctly. |
+| Workflow Local Path                  | R2 Object Key           | Direction |
+| ------------------------------------ | ----------------------- | --------- |
+| `/tmp/r2/inputs/source/input.png`    | `source/input.png`      | Download before workflow execution |
+| `/tmp/r2/outputs/result/image.png`   | `result/image.png`      | Upload after workflow execution |
 
-> [!NOTE]
->
-> **Size Limits:** RunPod endpoints have request size limits (e.g., 10MB for `/run`, 20MB for `/runsync`). Large base64 input images can exceed these limits. See [RunPod Docs](https://docs.runpod.io/docs/serverless-endpoint-urls).
+Rules:
+
+- Input file paths must start with `/tmp/r2/inputs/`.
+- Output file paths must start with `/tmp/r2/outputs/`.
+- Paths containing `..` are rejected.
+- `input.images` is no longer supported; files must be passed through R2.
 
 ### Output
 
@@ -117,7 +113,7 @@ Each object within the `input.images` array must contain:
 | `output`        | Object | Yes      | Top-level object containing the result of the job execution.  |
 | `output.status` | String | Yes      | `"success"` when ComfyUI reports that the workflow completed. |
 
-Generated files remain in ComfyUI's configured output location. The handler intentionally does not fetch, base64-encode, upload, or return those files.
+Generated files are uploaded to the configured R2 bucket using paths relative to `/tmp/r2/outputs/`. The handler does not base64-encode files or include file URLs in the response.
 
 ## Usage
 
@@ -157,7 +153,7 @@ To enable SSH access to the worker, set the `PUBLIC_KEY` environment variable to
 ## Further Documentation
 
 - **[Deployment Guide](docs/deployment.md):** Detailed steps for deploying on RunPod.
-- **[Configuration Guide](docs/configuration.md):** Full list of environment variables (including S3 setup).
+- **[Configuration Guide](docs/configuration.md):** Full list of environment variables (including R2 setup).
 - **[Customization Guide](docs/customization.md):** Adding custom models and nodes (Network Volumes, Docker builds).
 - **[Development Guide](docs/development.md):** Setting up a local environment for development & testing
 - **[CI/CD Guide](docs/ci-cd.md):** Information about the automated Docker build and publish workflows.
