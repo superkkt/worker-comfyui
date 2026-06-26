@@ -6,6 +6,8 @@ FROM ${BASE_IMAGE}
 
 # Prevents prompts from packages asking for user input during installation
 ENV DEBIAN_FRONTEND=noninteractive
+# Use Korea Standard Time for local timestamps generated inside the container
+ENV TZ=Asia/Seoul
 # Prefer binary wheels over source distributions for faster pip installations
 ENV PIP_PREFER_BINARY=1
 # Ensures output from python is printed immediately to the terminal without buffering
@@ -17,6 +19,7 @@ ENV CMAKE_BUILD_PARALLEL_LEVEL=8
 RUN apt-get update && apt-get install -y \
   python3.12 \
   python3.12-venv \
+  tzdata \
   git \
   wget \
   libgl1 \
@@ -26,6 +29,9 @@ RUN apt-get update && apt-get install -y \
   libxrender1 \
   ffmpeg \
   openssh-server \
+  && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+  && echo $TZ > /etc/timezone \
+  && dpkg-reconfigure -f noninteractive tzdata \
   && ln -sf /usr/bin/python3.12 /usr/bin/python \
   && ln -sf /usr/bin/pip3 /usr/bin/pip
 
